@@ -1,17 +1,191 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-  <meta charset="UTF-8" />
-  <title>Excel 合併工具</title>
-  <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工單轉換工具</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; }
+        input[type="file"], button { width: 100%; padding: 10px; margin: 10px 0; font-size: 16px; }
+        button { background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #218838; }
+        #preview { margin-top: 20px; }
+        .sheet-preview { margin-bottom: 20px; border: 1px solid #ddd; padding: 10px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ddd; padding: 6px; text-align: left; font-size: 12px; }
+        th { background: #f8f9fa; }
+    </style>
 </head>
 <body>
-  <h1>📊 Excel 合併工具</h1>
-  <p>請上傳一個包含三個分頁的 Excel 檔案，系統將自動合併為一個 Excel 檔案（含三個分頁）並提供下載。</p>
-  <input type="file" id="upload" accept=".xlsx" />
-  <button id="process">開始處理</button>
-  <a id="download" style="display:none;">下載合併檔案</a>
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-  <script src="script.js"></script>
+    <div class="container">
+        <h1>工單轉換工具</h1>
+        <p>上傳來源 Excel（ticket_report Sheet），自動生成含三個 Sheet 的目標報表。</p>
+        <input type="file" id="fileInput" accept=".xlsx" />
+        <button onclick="convertFile()">轉換並下載</button>
+        <div id="preview"></div>
+    </div>
+
+    <script>
+        async function convertFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file) return alert('請選擇檔案！');
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const wb = XLSX.read(data, { type: 'array' });
+                const sheetName = wb.SheetNames.find(name => name.includes('ticket_report')) || wb.SheetNames[0];
+                const ws = wb.Sheets[sheetName];
+                let rawData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+                // 清理數據：移除空行，合併多行描述（簡化，假設描述在特定欄位）
+                rawData = rawData.filter(row => row.some(cell => cell !== '' && cell !== undefined));
+                const headers = rawData[0];
+                let rows = rawData.slice(1).map(row => {
+                    // 合併附加資訊和問題描述（如果多行）
+                    let descIndex = headers.indexOf('附加資訊');
+                    let problemIndex = headers.indexOf('問題描述');
+                    if (descIndex > -1 && row[descIndex]) row[descIndex] = row[descIndex].replace(/\n/g, ' '); // 簡化合併
+                    if (problemIndex > -1 && row[problemIndex]) row[problemIndex] = row[problemIndex].replace(/\n/g, ' ');
+                    return row;
+                });
+
+                // 轉為物件陣列
+                const jsonData = rows.map(row => {
+                    const obj = {};
+                    headers.forEach((header, i) => obj[header] = row[i] || '');
+                    return obj;
+                });
+
+                // 生成業務統計
+                const businessStats = generateBusinessStats(jsonData, headers);
+
+                // 生成店組統計
+                const storeStats = generateStoreStats(jsonData, headers);
+
+                // 清理 ticket_report
+                const cleanedReport = [headers, ...rows];
+
+                // 創建新工作簿
+                const newWB = XLSX.utils.book_new();
+                const sheet1 = XLSX.utils.aoa_to_sheet(businessStats);
+                const sheet2 = XLSX.utils.aoa_to_sheet(storeStats);
+                const sheet3 = XLSX.utils.aoa_to_sheet(cleanedReport);
+                XLSX.utils.book_append_sheet(newWB, sheet1, '業務統計');
+                XLSX.utils.book_append_sheet(newWB, sheet2, '店組統計');
+                XLSX.utils.book_append_sheet(newWB, sheet3, 'ticket_report');
+
+                // 下載
+                XLSX.writeFile(newWB, '轉換後統計結果.xlsx');
+
+                // 預覽
+                showPreview(businessStats, storeStats, cleanedReport.slice(0, 5)); // 前5行預覽
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function generateBusinessStats(data, headers) {
+            const deptIndex = headers.indexOf('處理部門1');
+            const handlerIndex = headers.indexOf('處理人員1');
+            const secondLayerIndex = headers.indexOf('工單第二層');
+            const thirdLayerIndex = headers.indexOf('工單第三層');
+            const complaintIndex = headers.findIndex(h => h.includes('客訴類別?'));
+
+            const stats = {};
+            data.forEach(row => {
+                const dept = row[deptIndex] || '';
+                const handler = row[handlerIndex] || '';
+                const secondLayer = row[secondLayerIndex] || '';
+                const thirdLayer = row[thirdLayerIndex] || '';
+                const complaint = row[complaintIndex] || '';
+
+                // 解析區域 (e.g., from dept like "5802AA-Franchise - N11" -> N11)
+                const areaMatch = dept.match(/N\d+(?:\d+)?/);
+                const area = areaMatch ? areaMatch[0] : '未知';
+                const key = handler || area; // 以人員為主
+
+                if (!stats[key]) {
+                    stats[key] = { total: 0, service: 0, sales: 0, salesRelated: 0, fraud: 0, digital: 0, repeat: 0 };
+                }
+                const s = stats[key];
+                s.total++;
+                const isService = secondLayer.includes('服務') || thirdLayer.includes('服務');
+                if (isService) s.service++; else s.sales++;
+                if (!isService) s.salesRelated++;
+                if (complaint.includes('辦A給B') || complaint.includes('盜辦') || complaint.includes('特殊身份')) s.fraud++;
+                if (complaint.includes('數位加值')) s.digital++;
+                if (complaint.includes('二次抱怨')) s.repeat++;
+            });
+
+            // 輸出陣列
+            const output = [['區域/業務姓名', '總筆數', '服務/流程類工單筆數', '銷售類工單筆數', '銷售相關問題筆數', '(加盟)辦A給B/盜辦/特殊身份辦理爭議筆數', '數位加值服務爭議筆數', '二次抱怨銷售相關問題筆數']];
+            Object.keys(stats).forEach(key => {
+                const s = stats[key];
+                output.push([key, s.total, s.service, s.sales, s.salesRelated, s.fraud, s.digital, s.repeat]);
+            });
+            return output;
+        }
+
+        function generateStoreStats(data, headers) {
+            const storeIndex = headers.indexOf('銷售/啟用單位(最近一次)');
+            const attachIndex = headers.indexOf('附加資訊');
+            const secondLayerIndex = headers.indexOf('工單第二層');
+            const complaintIndex = headers.findIndex(h => h.includes('客訴類別?'));
+
+            const stats = {};
+            data.forEach(row => {
+                const store = (row[storeIndex] || '').split('/')[0] || '';
+                const attach = row[attachIndex] || '';
+                // 提取門市名 e.g., "店組代號(特約) : 1801396 淡水北新加盟門市" -> "淡水北新加盟門市"
+                const storeNameMatch = attach.match(/店組代號\(特約\) : \d+ (.+?)(?=\n|$)/);
+                const storeName = storeNameMatch ? storeNameMatch[1].trim() : `(查無資料)`;
+
+                const secondLayer = row[secondLayerIndex] || '';
+                const complaint = row[complaintIndex] || '';
+
+                if (!stats[store]) {
+                    stats[store] = { name: storeName, total: 0, service: 0, sales: 0, salesRelated: 0, fraud: 0, digital: 0, repeat: 0 };
+                }
+                const s = stats[store];
+                s.total++;
+                const isService = secondLayer.includes('服務');
+                if (isService) s.service++; else s.sales++;
+                if (!isService) s.salesRelated++;
+                if (complaint.includes('辦A給B') || complaint.includes('盜辦') || complaint.includes('特殊身份')) s.fraud++;
+                if (complaint.includes('數位加值')) s.digital++;
+                if (complaint.includes('二次抱怨')) s.repeat++;
+            });
+
+            // 輸出陣列
+            const output = [['店組代號', '加盟門市', '總筆數', '服務/流程類工單筆數', '銷售類工單筆數', '銷售相關問題筆數', '(加盟)辦A給B/盜辦/特殊身份辦理爭議筆數', '數位加值服務爭議筆數', '二次抱怨銷售相關問題筆數']];
+            Object.keys(stats).sort().forEach(store => {
+                const s = stats[store];
+                output.push([store, s.name, s.total, s.service, s.sales, s.salesRelated, s.fraud, s.digital, s.repeat]);
+            });
+            return output;
+        }
+
+        function showPreview(business, store, report) {
+            const preview = document.getElementById('preview');
+            preview.innerHTML = `
+                <div class="sheet-preview">
+                    <h3>業務統計預覽</h3>
+                    <table>${business.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('')}</table>
+                </div>
+                <div class="sheet-preview">
+                    <h3>店組統計預覽</h3>
+                    <table>${store.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('')}</table>
+                </div>
+                <div class="sheet-preview">
+                    <h3>ticket_report 預覽（前5行）</h3>
+                    <table>${report.map(row => `<tr>${row.slice(0, 10).map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('')}</table> <!-- 限10欄 -->
+                </div>
+            `;
+        }
+    </script>
 </body>
 </html>
