@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <title>Excel 合併工具</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1>📊 Excel 合併工具</h1>
+  <p>請上傳一個包含三個分頁的 Excel 檔案，系統將自動合併為一個 Excel 檔案（含三個分頁）並提供下載。</p>
+  <input type="file" id="upload" accept=".xlsx" />
+  <button id="process">開始處理</button>
+  <a id="download" style="display:none;">下載合併檔案</a>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
